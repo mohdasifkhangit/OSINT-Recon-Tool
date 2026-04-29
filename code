@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+# ============================================================
+#   OSINT RECON TOOL — by Mohd Asif Khan
+#   Gathers WHOIS, DNS, and open port data on any domain
+# ============================================================
+
+import socket
+import datetime
+
+# ── Try importing optional libraries ──
+try:
+    import whois
+    WHOIS_OK = True
+except ImportError:
+    WHOIS_OK = False
+
+try:
+    import dns.resolver
+    DNS_OK = True
+except ImportError:
+    DNS_OK = False
+
+
+# ── Styling helpers ──
+RED    = "\033[91m"
+GREEN  = "\033[92m"
+YELLOW = "\033[93m"
+CYAN   = "\033[96m"
+BOLD   = "\033[1m"
+RESET  = "\033[0m"
+
+def banner():
+    print(f"""
+{RED}{BOLD}
+ ██████╗ ███████╗██╗███╗   ██╗████████╗
+██╔═══██╗██╔════╝██║████╗  ██║╚══██╔══╝
+██║   ██║███████╗██║██╔██╗ ██║   ██║   
+██║   ██║╚════██║██║██║╚██╗██║   ██║   
+╚██████╔╝███████║██║██║ ╚████║   ██║   
+ ╚═════╝ ╚══════╝╚═╝╚═╝  ╚═══╝   ╚═╝  
+{RESET}{CYAN}        OSINT Recon Tool v1.0
+        by Mohd Asif Khan{RESET}
+""")
+
+def divider(title):
+    print(f"\n{YELLOW}{BOLD}{'─'*10} {title} {'─'*10}{RESET}")
+
+def success(msg): print(f"  {GREEN}[+]{RESET} {msg}")
+def info(msg):    print(f"  {CYAN}[*]{RESET} {msg}")
+def warn(msg):    print(f"  {YELLOW}[!]{RESET} {msg}")
+
+
+# ══════════════════════════════════════
+#  1. WHOIS LOOKUP
+# ══════════════════════════════════════
+def get_whois(domain):
+    divider("WHOIS LOOKUP")
+    if not WHOIS_OK:
+        warn("python-whois not installed. Run: pip install python-whois")
+        return
+
+    try:
+        w = whois.whois(domain)
+        fields = {
+            "Domain Name"     : w.domain_name,
+            "Registrar"       : w.registrar,
+            "Owner / Org"     : w.org,
+            "Country"         : w.country,
+            "Creation Date"   : w.creation_date,
+            "Expiration Date" : w.expiration_date,
+            "Last Updated"    : w.updated_date,
+            "Name Servers"    : w.name_servers,
+        }
+        for key, val in fields.items():
+            if val:
+                # Handle lists (e.g. multiple name servers)
+                if isinstance(val, list):
+                    val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val[:3])
+                # Handle datetime objects
+                if isinstance(val, datetime.datetime):
+                    val = val.strftime("%Y-%m-%d")
+                success(f"{key:<18}: {val}")
+    except Exception as e:
+        warn(f"WHOIS lookup failed: {e}")
+
+
+# ══════════════════════════════════════
+#  2. DNS RECORDS
+# ══════════════════════════════════════
+def get_dns(domain):
+    divider("DNS RECORDS")
+
+    # Basic IP via socket (always works)
+    try:
+        ip = socket.gethostbyname(domain)
+        success(f"IP Address (A)    : {ip}")
+    except socket.gaierror:
+        warn("Could not resolve domain to IP.")
+        return
+
+    if not DNS_OK:
+        warn("dnspython not installed for full DNS. Run: pip install dnspython")
+        return
+
+    record_types = ["A", "AAAA", "MX", "NS", "TXT", "CNAME"]
+    for rtype in record_types:
+        try:
+            answers = dns.resolver.resolve(domain, rtype, lifetime=3)
+            for r in answers:
+                success(f"{rtype:<18}: {r.to_text()[:80]}")
+        except Exception:
+            pass  # Record type doesn't exist — skip silently
+
+
+# ══════════════════════════════════════
+#  3. PORT SCANNER
+# ══════════════════════════════════════
+COMMON_PORTS = {
+    21   : "FTP",
+    22   : "SSH",
+    23   : "Telnet",
+    25   : "SMTP",
+    53   : "DNS",
+    80   : "HTTP",
+    110  : "POP3",
+    143  : "IMAP",
+    443  : "HTTPS",
+    445  : "SMB",
+    3306 : "MySQL",
+    3389 : "RDP",
+    5900 : "VNC",
+    8080 : "HTTP-Alt",
+    8443 : "HTTPS-Alt",
+}
+
+def scan_ports(domain):
+    divider("PORT SCAN")
+    try:
+        ip = socket.gethostbyname(domain)
+        info(f"Scanning {ip} ({len(COMMON_PORTS)} common ports)...")
+    except socket.gaierror:
+        warn("Cannot resolve domain for port scan.")
+        return
+
+    open_ports = []
+    for port, service in COMMON_PORTS.items():
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.8)
+            result = s.connect_ex((ip, port))
+            s.close()
+            if result == 0:
+                open_ports.append((port, service))
+                success(f"Port {port:<6} {service:<12} — {GREEN}OPEN{RESET}")
+        except Exception:
+            pass
+
+    if not open_ports:
+        warn("No common ports found open (firewall may be blocking).")
+    else:
+        print(f"\n  {CYAN}Found {len(open_ports)} open port(s){RESET}")
+
+
+# ══════════════════════════════════════
+#  4. SAVE REPORT
+# ══════════════════════════════════════
+def save_report(domain):
+    filename = f"recon_{domain.replace('.', '_')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    print(f"\n  {CYAN}[*]{RESET} Saving report to {BOLD}{filename}{RESET}...")
+
+    import sys
+    import io
+
+    # Re-run and capture output without color codes
+    old_stdout = sys.stdout
+    sys.stdout = buffer = io.StringIO()
+
+    try:
+        if WHOIS_OK:  get_whois(domain)
+        get_dns(domain)
+        scan_ports(domain)
+    finally:
+        sys.stdout = old_stdout
+
+    # Strip ANSI color codes from saved file
+    import re
+    clean = re.sub(r'\033\[[0-9;]*m', '', buffer.getvalue())
+
+    with open(filename, "w") as f:
+        f.write(f"OSINT RECON REPORT\n")
+        f.write(f"Target  : {domain}\n")
+        f.write(f"Date    : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("=" * 50 + "\n")
+        f.write(clean)
+
+    print(f"  {GREEN}[+]{RESET} Report saved: {BOLD}{filename}{RESET}")
+
+
+# ══════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════
+def main():
+    banner()
+
+    # Check missing libraries upfront
+    missing = []
+    if not WHOIS_OK: missing.append("python-whois")
+    if not DNS_OK:   missing.append("dnspython")
+    if missing:
+        warn(f"Optional libraries missing: {', '.join(missing)}")
+        warn(f"Install with: pip install {' '.join(missing)}\n")
+
+    domain = input(f"{CYAN}  [?] Enter target domain (e.g. google.com): {RESET}").strip()
+    if not domain:
+        warn("No domain entered. Exiting.")
+        return
+
+    # Remove http/https if user pastes a URL
+    domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
+    info(f"Target: {BOLD}{domain}{RESET}")
+
+    get_whois(domain)
+    get_dns(domain)
+    scan_ports(domain)
+
+    print()
+    save = input(f"\n{CYAN}  [?] Save report to file? (y/n): {RESET}").strip().lower()
+    if save == "y":
+        save_report(domain)
+
+    print(f"\n{RED}{BOLD}  Recon complete.{RESET}\n")
+
+
+if __name__ == "__main__":
+    main()
